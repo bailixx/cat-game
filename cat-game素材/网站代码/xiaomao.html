@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>低配版小猫真棒互动Demo</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #f0f2f5; font-family: 'Arial', sans-serif; }
+        #container { width: 100%; height: 100vh; display: block; }
+        
+        /* UI控制区 */
+        #ui-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            padding: 15px;
+            background: rgba(255,255,255,0.8);
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            border: none;
+            border-radius: 8px;
+            background-color: #4CAF50;
+            color: white;
+            transition: transform 0.1s;
+        }
+        button:active { transform: scale(0.95); }
+        #btn-carrot { background-color: #ff6b35; }
+        #btn-glasses { background-color: #333; }
+        #btn-bottle { background-color: #2196F3; }
+
+        /* 状态提示与视频隐藏 */
+        #status-message {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            background: rgba(255,255,255,0.9);
+            padding: 10px 20px;
+            border-radius: 8px;
+            display: none; /* 默认隐藏 */
+        }
+        .success-state { color: #4CAF50 !important; }
+        .reward-state { color: #E91E63 !important; }
+        
+        #input_video { display: none; } /* 隐藏原始摄像头画面 */
+    </style>
+</head>
+<body>
+
+<div id="status-message">准备就绪</div>
+
+<div id="container"></div>
+
+<div id="ui-controls">
+    <button id="btn-carrot">选择胡萝卜</button>
+    <button id="btn-glasses">选择眼镜</button>
+    <button id="btn-bottle">选择瓶子</button>
+</div>
+
+<video id="input_video"></video>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+<script>
+    let scene, camera, renderer;
+    let catBody, catPaw;
+    let targetCarrot, targetGlasses, targetBottle;
+    
+    // 状态管理
+    let currentTargetName = null; // 当前应该点击的目标
+    let isWaitingForReward = false; // 是否处于等待喂食奖励的状态
+    
+    const statusMsg = document.getElementById('status-message');
+    // const successSound = document.getElementById('success-sound'); // 获取音频元素
+
+    // 1. 初始化 3D 场景
+    function initThreeJS() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xf0f2f5);
+        
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 5;
+        camera.position.y = 1;
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('container').appendChild(renderer.domElement);
+
+        // 添加灯光
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 7);
+        scene.add(directionalLight);
+
+        // --- 创建简易模型 ---
+
+        // 红色大方块代替“小猫身体”
+        const catGeometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+        const catMaterial = new THREE.MeshLambertMaterial({ color: 0xFF5252 });
+        catBody = new THREE.Mesh(catGeometry, catMaterial);
+        catBody.position.set(0, 0.75, -1);
+        scene.add(catBody);
+
+        // 黄色球体代替“小猫爪子” (这是我们要移动的部件)
+        const pawGeometry = new THREE.SphereGeometry(0.3, 32, 32);
+        const pawMaterial = new THREE.MeshLambertMaterial({ color: 0xFFD740 });
+        catPaw = new THREE.Mesh(pawGeometry, pawMaterial);
+        // 初始位置在小猫身体前面一点
+        catPaw.position.set(0.4, 0.5, 0); 
+        scene.add(catPaw);
+
+        // 创建三个目标物品 (胡萝卜、眼镜、瓶子)
+        const itemSize = 0.6;
+        // 胡萝卜 (橙色方块)
+        targetCarrot = new THREE.Mesh(new THREE.BoxGeometry(itemSize, itemSize, itemSize), new THREE.MeshLambertMaterial({ color: 0xff6b35 }));
+        targetCarrot.position.set(-1.5, 0.3, 2);
+        targetCarrot.name = "carrot";
+        scene.add(targetCarrot);
+
+        // 眼镜 (黑色方块)
+        targetGlasses = new THREE.Mesh(new THREE.BoxGeometry(itemSize, 0.2, itemSize/2), new THREE.MeshLambertMaterial({ color: 0x333333 }));
+        targetGlasses.position.set(0, 0.1, 2);
+        targetGlasses.name = "glasses";
+        scene.add(targetGlasses);
+
+        // 瓶子 (蓝色圆柱体)
+        targetBottle = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.8, 32), new THREE.MeshLambertMaterial({ color: 0x2196F3 }));
+        targetBottle.position.set(1.5, 0.4, 2);
+        targetBottle.name = "bottle";
+        scene.add(targetBottle);
+
+        // 渲染循环
+        function animate() {
+            requestAnimationFrame(animate);
+            // 让物品稍微自转一下，增加点动感
+            targetCarrot.rotation.y += 0.01;
+            targetGlasses.rotation.y -= 0.01;
+            targetBottle.rotation.y += 0.01;
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // 窗口大小调整自适应
+        window.addEventListener('resize', onWindowResize, false);
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // 2. 动作交互逻辑
+    function movePawTo(targetMesh, itemName) {
+        if (isWaitingForReward) return; // 如果正在等待奖励，不接受新指令
+
+        console.log(`指令接收: 小猫去拍 ${itemName}`);
+        showStatus(`小猫正在思考...`, "");
+
+        // 记录当前目标，用于判断是否正确
+        currentTargetName = itemName;
+
+        // 爪子的初始休息位置
+        const restPosition = { x: 0.4, y: 0.5, z: 0 };
+        // 目标位置 (为了不穿模，稍微停在目标上方一点点)
+        const targetPosition = { 
+            x: targetMesh.position.x, 
+            y: targetMesh.position.y + 0.2, 
+            z: targetMesh.position.z - 0.2
+        };
+
+        // 使用 GSAP 创建平滑动画序列
+        const tl = gsap.timeline();
+
+        // 动作1: 抬起爪子
+        tl.to(catPaw.position, { y: 1.2, duration: 0.3, ease: "power2.out" })
+        // 动作2: 移动到目标上方并拍下
+          .to(catPaw.position, { 
+              x: targetPosition.x, 
+              z: targetPosition.z, 
+              duration: 0.5, 
+              ease: "power2.inOut" 
+          }, "-=0.1")
+          .to(catPaw.position, {
+              y: targetPosition.y,
+              duration: 0.2,
+              ease: "bounce.out",
+              onComplete: () => {
+                  // 拍到目标后的回调
+                  checkResult(itemName);
+                  // 拍中物体给个简单的视觉反馈（物体缩放一下）
+                  gsap.fromTo(targetMesh.scale, {x:1.2, y:0.8, z:1.2}, {x:1, y:1, z:1, duration: 0.3, ease:"elastic.out(1, 0.3)"});
+              }
+          })
+        // 动作3: 收回爪子
+          .to(catPaw.position, { x: restPosition.x, y: restPosition.y, z: restPosition.z, duration: 0.5, ease: "power2.inOut", delay: 0.5 });
+    }
+
+    // 检查结果并触发奖励机制
+    function checkResult(hitItemName) {
+        // 简化的逻辑：只要爪子拍下去了，就认为是“正确”的，触发奖励流程
+        // 在复杂版本中，这里会判断 hitItemName 是否等于用户点击的按钮名称
+        
+        console.log("拍到了! 触发奖励机制。");
+        showStatus("真棒！(请把手靠近屏幕喂食奖励)", "success-state");
+        
+        // 播放音效 (需要你提供音频文件并取消 HTML 中的注释)
+        // if(successSound) successSound.play();
+
+        // 开启等待奖励状态
+        isWaitingForReward = true;
+    }
+
+    function showStatus(text, className) {
+        statusMsg.innerText = text;
+        statusMsg.className = className;
+        statusMsg.style.display = 'block';
+    }
+
+    // 3. 绑定按钮事件
+    document.getElementById('btn-carrot').addEventListener('click', () => movePawTo(targetCarrot, 'carrot'));
+    document.getElementById('btn-glasses').addEventListener('click', () => movePawTo(targetGlasses, 'glasses'));
+    document.getElementById('btn-bottle').addEventListener('click', () => movePawTo(targetBottle, 'bottle'));
+
+
+    // 4. MediaPipe 手势识别 - 核心奖励黑科技
+    
+    const videoElement = document.getElementById('input_video');
+
+    // 手势识别结果回调函数
+    function onHandsResults(results) {
+        // 如果没有在等待奖励，或者没有检测到手，就直接返回
+        if (!isWaitingForReward || !results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+            return;
+        }
+
+        // 获取第一只手的数据
+        const landmarks = results.multiHandLandmarks[0];
+        
+        // 核心逻辑：如何判断手“靠近”了屏幕？
+        // 方法：检查手腕 (索引0) 或手掌中心的 Z 坐标深度。
+        // MediaPipe 的 Z 坐标：值越小（越负），表示离摄像头越近。
+        // 这里的阈值 -0.1 是一个经验值，需要根据实际环境调试。
+        // 另外，也可以判断手在画面中的大小（边界框面积）。
+        
+        const wristZ = landmarks[0].z; 
+        // console.log("手掌深度Z:", wristZ); // 调试用，观察z值变化
+
+        // 如果手腕深度小于某个阈值，认为手伸得很近了
+        if (wristZ < -0.08) { 
+            triggerRewardAction();
+        }
+    }
+
+    // 触发喂食奖励动作
+    function triggerRewardAction() {
+        console.log("检测到喂食动作！奖励触发！");
+        isWaitingForReward = false; // 关闭等待状态
+        showStatus("收到奖励，小猫好开心！❤️", "reward-state");
+
+        // 视觉反馈：让小猫身体（红方块）跳动一下表示开心
+        gsap.to(catBody.position, { y: 1.5, duration: 0.3, yoyo: true, repeat: 1, ease: "power2.out" });
+        gsap.to(catBody.rotation, { y: catBody.rotation.y + Math.PI*2, duration: 0.8, ease:"back.out(1.7)" });
+
+        // 2秒后隐藏提示
+        setTimeout(() => {
+            statusMsg.style.display = 'none';
+        }, 2500);
+    }
+
+    // 初始化 MediaPipe Hands
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.7, // 提高检测置信度，防止误判
+        minTrackingConfidence: 0.7
+    });
+    hands.onResults(onHandsResults);
+
+    // 启动摄像头
+    const cameraMediapipe = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 640,
+        height: 480
+    });
+    cameraMediapipe.start();
+
+    // 启动 Three.js
+    initThreeJS();
+
+</script>
+</body>
+</html>
